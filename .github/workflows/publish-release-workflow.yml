@@ -1,0 +1,88 @@
+name: Publish Release
+
+# Triggered from the private repo's publish-release.sh script
+# or manually from the GitHub UI.
+#
+# Setup (one time):
+#   1. Copy this file to LinkedIn-releases/.github/workflows/publish-release.yml
+#   2. Create a PAT with "contents:read" on RandAOLabs/LinkedIn (private repo)
+#   3. Go to LinkedIn-releases → Settings → Secrets → Actions
+#   4. Add secret: PRIVATE_REPO_TOKEN = your PAT
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. v1.0.3)"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  PRIVATE_REPO: RandAOLabs/LinkedIn
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts from private release
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          mkdir -p assets
+          gh release download "$TAG" \
+            --repo "$PRIVATE_REPO" \
+            --dir assets \
+            --pattern "*.exe" \
+            --pattern "*.dmg" \
+            --pattern "*.AppImage" \
+            --pattern "*.deb" \
+            --pattern "*.yml" \
+            --pattern "*.yaml" \
+            --pattern "*.blockmap" \
+            2>/dev/null || true
+
+          FILE_COUNT=$(find assets -type f | wc -l)
+          if [ "$FILE_COUNT" -eq 0 ]; then
+            echo "ERROR: No artifacts found for $TAG"
+            exit 1
+          fi
+          echo "Downloaded $FILE_COUNT file(s):"
+          ls -lh assets/
+
+      - name: Get release metadata
+        id: meta
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          TITLE=$(gh release view "$TAG" --repo "$PRIVATE_REPO" --json name -q .name 2>/dev/null || echo "LinkedIn Automation $TAG")
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+
+          gh release view "$TAG" --repo "$PRIVATE_REPO" --json body -q .body > /tmp/release-notes.md 2>/dev/null || echo "Release $TAG" > /tmp/release-notes.md
+
+      - name: Delete existing release (if re-publishing)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if gh release view "$TAG" --repo "${{ github.repository }}" &>/dev/null; then
+            echo "Release $TAG already exists — deleting to re-publish..."
+            gh release delete "$TAG" --repo "${{ github.repository }}" --yes --cleanup-tag 2>/dev/null || true
+          fi
+
+      - name: Create public release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "${{ steps.meta.outputs.title }}" \
+            --notes-file /tmp/release-notes.md \
+            assets/*
+
+          echo "Published: https://github.com/${{ github.repository }}/releases/tag/$TAG"
