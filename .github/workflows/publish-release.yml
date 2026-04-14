@@ -27,6 +27,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Verify token can see private release
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          echo "Checking access to $PRIVATE_REPO release $TAG..."
+          gh release view "$TAG" --repo "$PRIVATE_REPO" --json tagName,assets \
+            --jq '"Tag: \(.tagName)\nAssets: \(.assets | length)\n" + (.assets | map("  - \(.name) (\(.size) bytes)") | join("\n"))'
+
       - name: Download artifacts from private release
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
@@ -42,12 +51,11 @@ jobs:
             --pattern "*.deb" \
             --pattern "*.yml" \
             --pattern "*.yaml" \
-            --pattern "*.blockmap" \
-            2>/dev/null || true
+            --pattern "*.blockmap"
 
           FILE_COUNT=$(find assets -type f | wc -l)
           if [ "$FILE_COUNT" -eq 0 ]; then
-            echo "ERROR: No artifacts found for $TAG"
+            echo "ERROR: No artifacts downloaded for $TAG"
             exit 1
           fi
           echo "Downloaded $FILE_COUNT file(s):"
