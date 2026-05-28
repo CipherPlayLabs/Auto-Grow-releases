@@ -4,9 +4,9 @@ name: Publish Release
 # or manually from the GitHub UI.
 #
 # Setup (one time):
-#   1. Copy this file to LinkedIn-releases/.github/workflows/publish-release.yml
-#   2. Create a PAT with "contents:read" on RandAOLabs/LinkedIn (private repo)
-#   3. Go to LinkedIn-releases → Settings → Secrets → Actions
+#   1. Copy this file to Auto-Grow-releases/.github/workflows/publish-release.yml
+#   2. Create a PAT with "contents:read" on CipherPlayLabs/AutoGrow (private repo)
+#   3. Go to Auto-Grow-releases → Settings → Secrets → Actions
 #   4. Add secret: PRIVATE_REPO_TOKEN = your PAT
 
 on:
@@ -20,19 +20,27 @@ permissions:
   contents: write
 
 env:
-  PRIVATE_REPO: RandAOLabs/LinkedIn
+  PRIVATE_REPO: CipherPlayLabs/AutoGrow
 
 jobs:
   publish:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Verify token can see private release
+      - name: Diagnose token access
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
+          echo "=== Token identity ==="
+          gh api user --jq '"Authenticated as: \(.login)"' || echo "Token is invalid or has no user scope"
+
+          echo ""
+          echo "=== Can token see the repo? ==="
+          gh api "repos/$PRIVATE_REPO" --jq '"Repo: \(.full_name)\nPrivate: \(.private)\nPermissions: \(.permissions)"' || echo "Cannot see $PRIVATE_REPO — check PAT scope/SSO/fine-grained access"
+
+          echo ""
+          echo "=== Release check ==="
           TAG="${{ github.event.inputs.tag }}"
-          echo "Checking access to $PRIVATE_REPO release $TAG..."
           gh release view "$TAG" --repo "$PRIVATE_REPO" --json tagName,assets \
             --jq '"Tag: \(.tagName)\nAssets: \(.assets | length)\n" + (.assets | map("  - \(.name) (\(.size) bytes)") | join("\n"))'
 
@@ -47,7 +55,6 @@ jobs:
             --dir assets \
             --pattern "*.exe" \
             --pattern "*.dmg" \
-            --pattern "*.AppImage" \
             --pattern "*.deb" \
             --pattern "*.yml" \
             --pattern "*.yaml" \
@@ -67,7 +74,7 @@ jobs:
           GH_TOKEN: ${{ secrets.PRIVATE_REPO_TOKEN }}
         run: |
           TAG="${{ github.event.inputs.tag }}"
-          TITLE=$(gh release view "$TAG" --repo "$PRIVATE_REPO" --json name -q .name 2>/dev/null || echo "LinkedIn Automation $TAG")
+          TITLE=$(gh release view "$TAG" --repo "$PRIVATE_REPO" --json name -q .name 2>/dev/null || echo "AutoGrow $TAG")
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
 
           gh release view "$TAG" --repo "$PRIVATE_REPO" --json body -q .body > /tmp/release-notes.md 2>/dev/null || echo "Release $TAG" > /tmp/release-notes.md
