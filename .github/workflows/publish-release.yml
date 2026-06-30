@@ -55,7 +55,9 @@ jobs:
             --dir assets \
             --pattern "*.exe" \
             --pattern "*.dmg" \
+            --pattern "*.zip" \
             --pattern "*.deb" \
+            --pattern "*.AppImage" \
             --pattern "*.yml" \
             --pattern "*.yaml" \
             --pattern "*.blockmap"
