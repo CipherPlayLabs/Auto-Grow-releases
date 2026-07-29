@@ -1,6 +1,16 @@
 name: Publish Release
 
-# Triggered from the private repo's publish-release.sh script
+# Mirrors a finished, signed build from the PRIVATE build repo to the PUBLIC
+# releases repo that customers and the auto-updater actually read.
+#
+# ⚠️ THIS FILE IS A COPY. The live workflow is
+# CipherPlayLabs/Auto-Grow-releases/.github/workflows/publish-release.yml.
+# This committed version drifted from the live one before (the live one had
+# gained *.zip and *.AppImage patterns that were never copied back), which is
+# how a reviewer reading this repo got a wrong picture of what ships. If you
+# change one, change both in the same sitting.
+#
+# Triggered from the private repo's publish-release.sh (`npm run release:publish`)
 # or manually from the GitHub UI.
 #
 # Setup (one time):
@@ -18,6 +28,12 @@ on:
 
 permissions:
   contents: write
+  # Artifact attestations are signed with a short-lived Sigstore certificate
+  # minted against this job's OIDC identity. THIS repo is public, which is why
+  # they work here — on the private build repo GitHub gates them behind
+  # Enterprise Cloud, and the build workflow only warns.
+  id-token: write
+  attestations: write
 
 env:
   PRIVATE_REPO: CipherPlayLabs/AutoGrow
@@ -60,7 +76,8 @@ jobs:
             --pattern "*.AppImage" \
             --pattern "*.yml" \
             --pattern "*.yaml" \
-            --pattern "*.blockmap"
+            --pattern "*.blockmap" \
+            --pattern "SHA256SUMS.txt"
 
           FILE_COUNT=$(find assets -type f | wc -l)
           if [ "$FILE_COUNT" -eq 0 ]; then
@@ -69,6 +86,78 @@ jobs:
           fi
           echo "Downloaded $FILE_COUNT file(s):"
           ls -lh assets/
+
+      # ── The mirror proves it copied faithfully ────────────────
+      # This is what makes attesting in THIS repo an honest claim. The build
+      # happened in the private repo; all this workflow does is move bytes. By
+      # re-deriving every hash against the manifest the build itself published,
+      # we establish that the files signed-for below are byte-identical to the
+      # ones that were code-signed and notarized upstream. Without this step the
+      # attestation would only say "some file passed through our publish job".
+      #
+      # Hard failure on purpose: a mismatch means the artifact on the public
+      # release differs from the artifact that was signed.
+      - name: Verify artifacts match the upstream build manifest
+        working-directory: assets
+        run: |
+          set -euo pipefail
+
+          if [ ! -f SHA256SUMS.txt ]; then
+            echo "::error::SHA256SUMS.txt is missing from the upstream release ${{ github.event.inputs.tag }}."
+            echo "::error::Builds before v1.0.217 predate that manifest and cannot be mirrored by this workflow."
+            exit 1
+          fi
+
+          echo "══ upstream manifest ══"
+          cat SHA256SUMS.txt
+
+          echo ""
+          echo "══ re-derived from the downloaded bytes ══"
+          # -c fails on any mismatch AND on any listed file that did not arrive,
+          # so this covers a truncated download as well as a corrupted one.
+          sha256sum -c SHA256SUMS.txt
+
+          echo ""
+          echo "══ every shipped binary is covered by the manifest ══"
+          # The reverse direction: -c proves everything LISTED is intact, not
+          # that everything PRESENT is listed. An unlisted binary would sail
+          # through the check above and still land on the public release.
+          shopt -s nullglob
+          uncovered=0
+          for file in *.exe *.dmg *.zip *.deb *.AppImage; do
+            if grep -qF "  $file" SHA256SUMS.txt; then
+              echo "  covered: $file"
+            else
+              echo "::error::$file is published but absent from SHA256SUMS.txt."
+              uncovered=1
+            fi
+          done
+          if [ "$uncovered" -ne 0 ]; then exit 1; fi
+
+      # ── Signed provenance for what we are about to publish ────
+      # Scope note, so nobody reads more into this than it says: the subject is
+      # the bytes on the public release and the issuer is THIS publish workflow.
+      # It does not claim to be the compiler. The chain a verifier can walk:
+      #   Authenticode / Developer ID → CipherPlay signed these bytes (at build)
+      #   the SHA256SUMS check above  → these bytes ARE the upstream build's output
+      #   this attestation            → CipherPlayLabs' publish workflow put exactly
+      #                                 these bytes on this release
+      # Together that closes the "someone with release-write swapped a binary in"
+      # gap, which signing alone does not.
+      #
+      # Attesting BEFORE the release is created means we never publish an
+      # artifact we could not attest. Re-running is cheap and idempotent (the
+      # release is deleted and recreated), so a hard failure costs a re-run,
+      # never a rebuild.
+      - name: Attest published artifacts
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: |
+            assets/*.exe
+            assets/*.dmg
+            assets/*.zip
+            assets/*.deb
+            assets/*.AppImage
 
       - name: Get release metadata
         id: meta
@@ -103,3 +192,17 @@ jobs:
             assets/*
 
           echo "Published: https://github.com/${{ github.repository }}/releases/tag/$TAG"
+
+      - name: Summarize verification for this release
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          {
+            echo "### Published \`$TAG\`"
+            echo ""
+            echo "Every binary was re-hashed against the upstream build's \`SHA256SUMS.txt\`"
+            echo "and attested before publication."
+            echo ""
+            echo '```bash'
+            echo "gh attestation verify <downloaded-file> --repo ${{ github.repository }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
